@@ -58,6 +58,8 @@ public class AudioRecord implements AudioRouting
     //---------------------------------------------------------
     // Constants
     //--------------------
+    /*AudioProcess在创建AudioRecord对象后就同时创建实例,这是为了方便第一帧数据时设置的标志位isFirstFrame的维护
+    即从录音开始到录音结束，AudioProcess只有一个实例。nullCount是返回空数据次数的计数器*/
     AudioProcess ap = new AudioProcess();
     int nullCount=0;
     /**
