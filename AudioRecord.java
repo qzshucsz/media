@@ -55,13 +55,13 @@ import com.android.internal.annotations.GuardedBy;
  */
 public class AudioRecord implements AudioRouting
 {
+    /*在AudioRecord对象生成实例后也生成一个AudioProcess实例,这是为了isFirstFrame(处理第一帧数据时设置的标志位)的维护方便,
+    也就是说从录音开始到录音结束，只有一个AudioProcess实例,，它可以实现低通滤波和音高转移处理。nullCount是返回空数据次数的计数器*/
+    AudioProcess ap = new AudioProcess();
+    int nullCounter=0;
     //---------------------------------------------------------
     // Constants
     //--------------------
-    /*AudioProcess在创建AudioRecord对象后就同时创建实例,这是为了方便第一帧数据时设置的标志位isFirstFrame的维护
-    即从录音开始到录音结束，AudioProcess只有一个实例。nullCount是返回空数据次数的计数器*/
-    AudioProcess ap = new AudioProcess();
-    int nullCount=0;
     /**
      *  indicates AudioRecord state is not successfully initialized.
      */
@@ -1117,15 +1117,19 @@ public class AudioRecord implements AudioRouting
         //        readMode == READ_BLOCKING);
         int result = native_read_in_byte_array(audioData, offsetInBytes, sizeInBytes,
                        readMode == READ_BLOCKING);
-        /*为了使app的读取请求能得到及时的响应，将前3次读取赋值为空返回给应用*/
-        if(nullCount<3){
+        /*为了使app的读取请求能得到及时的响应，将前3次读取的数据赋值为0并返回给应用*/
+        if(nullCounter<3){
             byte content=(byte)00000000;
             for(int i=0;i<audioData.length;i++)
                 audioData[i]=content;
-            nullCount++;
+            nullCounter++;
             return result;
         }else {
-            Log.d(TAG, "-----------catch ya when reading in bytes-----------");
+        /*读取数据并根据需要选择:
+        1.不进行任何处理（原始数据）
+        2.进行低通滤波处理(用法:AudioProcess.filterProcess(byte[] data,int size))
+        3.进行音高转移处理（其效果类似与变声，用法AudioProcess.pitchProcess(byte[] data,int size))*/
+            Log.d(TAG, "-----------do procession or return original data  -----------");
             audioData = ap.filterProcess(audioData, sizeInBytes);
             return result;
         }
@@ -1202,13 +1206,39 @@ public class AudioRecord implements AudioRouting
        /* return native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
                 readMode == READ_BLOCKING);*/
         Log.d(TAG, "-----------catch ya when reading in shorts-----------" );
-        AudioProcess ap = new AudioProcess();
         int result = native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
                 readMode == READ_BLOCKING);
-        audioData = ap.filterProcess(audioData,sizeInBytes);
+        byte[] byteAudioData=new byte[audioData.length*2];
+        byteAudioData=shortArrayToByteArray(audioData);
+        Log.d(TAG, "-----------convert to byte[] successfully!-----------" );
+        byteAudioData = ap.filterProcess(byteAudioData,byteAudioData.length);
+        audioData=byteArrayToShortArray(byteAudioData);
+        Log.d(TAG, "-----------convert back to short[] successfully!-----------" );
         return result;
     }
 
+    /*the convertion between byte arrray and short array*/
+     public short[] byteArrayToShortArray(byte[] in_buff) {
+
+        int shortLength = in_buff.length >> 1;
+        short[] dest = new short[shortLength];
+        for (int i = 0; i < shortLength; i++) {
+            dest[i] = (short) (in_buff[i * 2] << 8 | in_buff[2 * i + 1] & 0xff);
+        }
+        return dest;
+    }
+
+    public byte[] shortArrayToByteArray(short[] in_buff) {
+
+        int byteLength = in_buff.length<<1;
+        byte[] dest = new byte[byteLength];
+        for (int i = 0; i < in_buff.length; i++) {
+            dest[i * 2] = (byte) (in_buff[i] >> 8);
+            dest[i * 2 + 1] = (byte) (in_buff[i] >> 0);
+        }
+
+        return dest;
+    }
     /**
      * Reads audio data from the audio hardware for recording into a float array.
      * The format specified in the AudioRecord constructor should be
@@ -1261,11 +1291,38 @@ public class AudioRecord implements AudioRouting
         /*return native_read_in_float_array(audioData, offsetInFloats, sizeInFloats,
                 readMode == READ_BLOCKING);*/
         Log.d(TAG, "-----------catch ya when reading in floats-----------" );
-        AudioProcess ap = new AudioProcess();
         int result = native_read_in_float_array(audioData, offsetInFloats, sizeInFloats,
                 readMode == READ_BLOCKING);
-        audioData = ap.process(audioData,sizeInFloats);
+       byte[] byteAudioData=new byte[audioData.length*2];
+       byteAudioData=floatArraytoByteArray(audioData,0,audioData.length,byteAudioData,0);
+       Log.d(TAG, "-----------float[] convert to byte[] successfully!-----------" );
+       byteAudioData=ap.filterProcess(byteAudioData,byteAudioData.length);
+       audioData = byteArraytoFloatArray(byteAudioData,0,audioData,0,audioData.length)
+         Log.d(TAG, "-----------convert back to float[] successfully!-----------" );
         return result;
+    }
+
+    /*convertion between byte array and float array*/
+     public float[] byteArraytoFloatArray(byte[] in_buff, int in_offset, float[] out_buff, int out_offset, int out_len) {
+        int ix = in_offset;
+        int len = out_offset + out_len;
+        for (int ox = out_offset; ox < len; ox++) {
+            out_buff[ox] = ((short) ((in_buff[ix++] & 0xFF) |
+                    (in_buff[ix++] << 8))) * (1.0f / 32767.0f);
+        }
+        return out_buff;
+    }
+
+    /*float[]转byte[]*/
+    public  byte[] floatArraytoByteArray(float[] in_buff, int in_offset, int in_len, byte[] out_buff, int out_offset) {
+        int ox = out_offset;
+        int len = in_offset + in_len;
+        for (int ix = in_offset; ix < len; ix++) {
+            int x = (int) (in_buff[ix] * 32767.0);
+            out_buff[ox++] = (byte) x;
+            out_buff[ox++] = (byte) (x >>> 8);
+        }
+        return out_buff;
     }
 
     /**
