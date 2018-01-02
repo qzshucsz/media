@@ -59,6 +59,7 @@ public class AudioRecord implements AudioRouting
     // Constants
     //--------------------
     AudioProcess ap = new AudioProcess();
+    int nullCount=0;
     /**
      *  indicates AudioRecord state is not successfully initialized.
      */
@@ -1114,9 +1115,18 @@ public class AudioRecord implements AudioRouting
         //        readMode == READ_BLOCKING);
         int result = native_read_in_byte_array(audioData, offsetInBytes, sizeInBytes,
                        readMode == READ_BLOCKING);
-        Log.d(TAG, "-----------catch ya when reading in bytes-----------" );
-        audioData = ap.filterProcess(audioData,sizeInBytes);
-        return result;
+        /*为了使app的读取请求能得到及时的响应，将前3次读取赋值为空返回给应用*/
+        if(nullCount<3){
+            byte content=(byte)00000000;
+            for(int i=0;i<audioData.length;i++)
+                audioData[i]=content;
+            nullCount++;
+            return result;
+        }else {
+            Log.d(TAG, "-----------catch ya when reading in bytes-----------");
+            audioData = ap.filterProcess(audioData, sizeInBytes);
+            return result;
+        }
     }
 
     /**
@@ -1193,7 +1203,7 @@ public class AudioRecord implements AudioRouting
         AudioProcess ap = new AudioProcess();
         int result = native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
                 readMode == READ_BLOCKING);
-        audioData = ap.process(audioData,sizeInShorts);
+        audioData = ap.filterProcess(audioData,sizeInBytes);
         return result;
     }
 
