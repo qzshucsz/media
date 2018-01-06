@@ -15,7 +15,7 @@
  */
 
 package android.media;
-import java.io.*;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
@@ -55,13 +55,13 @@ import com.android.internal.annotations.GuardedBy;
  */
 public class AudioRecord implements AudioRouting
 {
-    /*在AudioRecord对象生成实例后也生成一个AudioProcess实例,这是为了isFirstFrame(处理第一帧数据时设置的标志位)的维护方便,
-    也就是说从录音开始到录音结束，只有一个AudioProcess实例,，它可以实现低通滤波和音高转移处理。nullCount是返回空数据次数的计数器*/
-    AudioProcess ap = new AudioProcess();
     int nullCounter=0;
+    onlineFilter lpsFilter=null;
     //---------------------------------------------------------
     // Constants
     //--------------------
+
+
     /**
      *  indicates AudioRecord state is not successfully initialized.
      */
@@ -1065,7 +1065,7 @@ public class AudioRecord implements AudioRouting
      * <li>{@link #ERROR} in case of other error</li>
      * </ul>
      */
-    public int read(@NonNull byte[] audioData, int offsetInBytes, int sizeInBytes)throws IOException {
+    public int read(@NonNull byte[] audioData, int offsetInBytes, int sizeInBytes) {
         return read(audioData, offsetInBytes, sizeInBytes, READ_BLOCKING);
     }
 
@@ -1097,7 +1097,7 @@ public class AudioRecord implements AudioRouting
      * </ul>
      */
     public int read(@NonNull byte[] audioData, int offsetInBytes, int sizeInBytes,
-            @ReadMode int readMode) throws IOException{
+            @ReadMode int readMode) {
         if (mState != STATE_INITIALIZED  || mAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) {
             return ERROR_INVALID_OPERATION;
         }
@@ -1113,26 +1113,24 @@ public class AudioRecord implements AudioRouting
             return ERROR_BAD_VALUE;
         }
 
-        //return native_read_in_byte_array(audioData, offsetInBytes, sizeInBytes,
-        //        readMode == READ_BLOCKING);
-        int result = native_read_in_byte_array(audioData, offsetInBytes, sizeInBytes,
-                       readMode == READ_BLOCKING);
-        /*为了使app的读取请求能得到及时的响应，将前3次读取的数据赋值为0并返回给应用*/
-        if(nullCounter<3){
+        int result=native_read_in_byte_array(audioData, offsetInBytes, sizeInBytes,
+                readMode == READ_BLOCKING);
+	    if(nullCounter<3){
+            if(nullCounter==0){
+                lpsFilter=new onlineFilter(mSampleRate);
+                lpsFilter.reset();
+            }
             byte content=(byte)00000000;
             for(int i=0;i<audioData.length;i++)
                 audioData[i]=content;
+            Log.d(TAG, "-----------byte[] reading. Return null successfully! -----------");
             nullCounter++;
             return result;
         }else {
-        /*读取数据并根据需要选择:
-        1.不进行任何处理（原始数据）
-        2.进行低通滤波处理(用法:AudioProcess.filterProcess(byte[] data,int size))
-        3.进行音高转移处理（其效果类似与变声，用法AudioProcess.pitchProcess(byte[] data,int size))*/
-            Log.d(TAG, "-----------do procession or return original data  -----------");
-            System.arraycopy(ap.filterProcess(audioData, sizeInBytes),0,audioData,0,ap.filterProcess(audioData, sizeInBytes).length);
+            audioData=lpsFilter.process(audioData);
+            Log.d(TAG, "-----------byte[] reading. Doing procession or return original data  -----------");
             return result;
-        }
+		}
     }
 
     /**
@@ -1156,7 +1154,7 @@ public class AudioRecord implements AudioRouting
      * <li>{@link #ERROR} in case of other error</li>
      * </ul>
      */
-    public int read(@NonNull short[] audioData, int offsetInShorts, int sizeInShorts)throws IOException {
+    public int read(@NonNull short[] audioData, int offsetInShorts, int sizeInShorts) {
         return read(audioData, offsetInShorts, sizeInShorts, READ_BLOCKING);
     }
 
@@ -1187,7 +1185,7 @@ public class AudioRecord implements AudioRouting
      * </ul>
      */
     public int read(@NonNull short[] audioData, int offsetInShorts, int sizeInShorts,
-            @ReadMode int readMode) throws IOException {
+            @ReadMode int readMode) {
         if (mState != STATE_INITIALIZED || mAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) {
             return ERROR_INVALID_OPERATION;
         }
@@ -1203,49 +1201,26 @@ public class AudioRecord implements AudioRouting
             return ERROR_BAD_VALUE;
         }
 
-       /* return native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
-                readMode == READ_BLOCKING);*/
-        Log.d(TAG, "-----------catch ya when reading in shorts-----------" );
-        int result = native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
+        int result=native_read_in_short_array(audioData, offsetInShorts, sizeInShorts,
                 readMode == READ_BLOCKING);
         if(nullCounter<3){
+            if(nullCounter==0){
+                lpsFilter=new onlineFilter(mSampleRate);
+                lpsFilter.reset();
+            }
             for(int i=0;i<audioData.length;i++)
                 audioData[i]=0;
+            Log.d(TAG, "-----------short[] reading,return null successfully! -----------");
             nullCounter++;
             return result;
         }else {
-            byte[] byteAudioData = new byte[audioData.length * 2];
-            byteAudioData = shortArrayToByteArray(audioData);
-            Log.d(TAG, "-----------convert to byte[] successfully!-----------");
-            System.arraycopy(ap.filterProcess(byteAudioData, byteAudioData.length),0,byteAudioData,0,ap.filterProcess(byteAudioData, byteAudioData.length).length);
-            System.arraycopy(byteArrayToShortArray(byteAudioData),0,audioData,0,audioData.length);
-            Log.d(TAG, "-----------convert back to short[] successfully!-----------");
+            audioData=lpsFilter.process(audioData);
+            Log.d(TAG, "-----------short[] reading,to do procession or return original data  -----------");
             return result;
         }
+
     }
 
-    /*the convertion between byte arrray and short array*/
-     public short[] byteArrayToShortArray(byte[] in_buff) {
-
-        int shortLength = in_buff.length >> 1;
-        short[] dest = new short[shortLength];
-        for (int i = 0; i < shortLength; i++) {
-            dest[i] = (short) (in_buff[i * 2] << 8 | in_buff[2 * i + 1] & 0xff);
-        }
-        return dest;
-    }
-
-    public byte[] shortArrayToByteArray(short[] in_buff) {
-
-        int byteLength = in_buff.length<<1;
-        byte[] dest = new byte[byteLength];
-        for (int i = 0; i < in_buff.length; i++) {
-            dest[i * 2] = (byte) (in_buff[i] >> 8);
-            dest[i * 2 + 1] = (byte) (in_buff[i] >> 0);
-        }
-
-        return dest;
-    }
     /**
      * Reads audio data from the audio hardware for recording into a float array.
      * The format specified in the AudioRecord constructor should be
@@ -1273,7 +1248,7 @@ public class AudioRecord implements AudioRouting
      * </ul>
      */
     public int read(@NonNull float[] audioData, int offsetInFloats, int sizeInFloats,
-            @ReadMode int readMode) throws IOException{
+            @ReadMode int readMode) {
         if (mState == STATE_UNINITIALIZED) {
             Log.e(TAG, "AudioRecord.read() called in invalid state STATE_UNINITIALIZED");
             return ERROR_INVALID_OPERATION;
@@ -1295,48 +1270,23 @@ public class AudioRecord implements AudioRouting
             return ERROR_BAD_VALUE;
         }
 
-        /*return native_read_in_float_array(audioData, offsetInFloats, sizeInFloats,
-                readMode == READ_BLOCKING);*/
-        Log.d(TAG, "-----------catch ya when reading in floats-----------" );
-        int result = native_read_in_float_array(audioData, offsetInFloats, sizeInFloats,
+        int result=native_read_in_float_array(audioData, offsetInFloats, sizeInFloats,
                 readMode == READ_BLOCKING);
         if(nullCounter<3){
+            if(nullCounter==0){
+                lpsFilter=new onlineFilter(mSampleRate);
+                lpsFilter.reset();
+            }
             for(int i=0;i<audioData.length;i++)
                 audioData[i]=0;
+            Log.d(TAG, "-----------float [] reading,return null successfully! -----------");
             nullCounter++;
             return result;
         }else {
-            byte[] byteAudioData = new byte[audioData.length * 2];
-            byteAudioData = floatArraytoByteArray(audioData, 0, audioData.length, byteAudioData, 0);
-            Log.d(TAG, "-----------float[] convert to byte[] successfully!-----------");
-            System.arraycopy(ap.filterProcess(byteAudioData, byteAudioData.length),0,byteAudioData,0,ap.filterProcess(byteAudioData, byteAudioData.length).length);
-            audioData = byteArraytoFloatArray(byteAudioData, 0, audioData, 0, audioData.length);
-            Log.d(TAG, "-----------convert back to float[] successfully!-----------");
+            audioData=lpsFilter.process(audioData);
+            Log.d(TAG, "-----------float [] reading,to do procession or return original data  -----------");
             return result;
         }
-    }
-
-    /*convertion between byte array and float array*/
-     public float[] byteArraytoFloatArray(byte[] in_buff, int in_offset, float[] out_buff, int out_offset, int out_len) {
-        int ix = in_offset;
-        int len = out_offset + out_len;
-        for (int ox = out_offset; ox < len; ox++) {
-            out_buff[ox] = ((short) ((in_buff[ix++] & 0xFF) |
-                    (in_buff[ix++] << 8))) * (1.0f / 32767.0f);
-        }
-        return out_buff;
-    }
-
-    /*float[]转byte[]*/
-    public  byte[] floatArraytoByteArray(float[] in_buff, int in_offset, int in_len, byte[] out_buff, int out_offset) {
-        int ox = out_offset;
-        int len = in_offset + in_len;
-        for (int ix = in_offset; ix < len; ix++) {
-            int x = (int) (in_buff[ix] * 32767.0);
-            out_buff[ox++] = (byte) x;
-            out_buff[ox++] = (byte) (x >>> 8);
-        }
-        return out_buff;
     }
 
     /**
@@ -1363,7 +1313,7 @@ public class AudioRecord implements AudioRouting
      * <li>{@link #ERROR} in case of other error</li>
      * </ul>
      */
-    public int read(@NonNull ByteBuffer audioBuffer, int sizeInBytes)throws IOException {
+    public int read(@NonNull ByteBuffer audioBuffer, int sizeInBytes) {
         return read(audioBuffer, sizeInBytes, READ_BLOCKING);
     }
 
@@ -1396,7 +1346,7 @@ public class AudioRecord implements AudioRouting
      * <li>{@link #ERROR} in case of other error</li>
      * </ul>
      */
-    public int read(@NonNull ByteBuffer audioBuffer, int sizeInBytes, @ReadMode int readMode)throws IOException {
+    public int read(@NonNull ByteBuffer audioBuffer, int sizeInBytes, @ReadMode int readMode) {
         if (mState != STATE_INITIALIZED) {
             return ERROR_INVALID_OPERATION;
         }
@@ -1410,31 +1360,33 @@ public class AudioRecord implements AudioRouting
             return ERROR_BAD_VALUE;
         }
 
-        /*return native_read_in_direct_buffer(audioBuffer, sizeInBytes, readMode == READ_BLOCKING);*/
-        Log.d(TAG, "-----------catch ya when reading in direct buffer-----------" );
-        int result = native_read_in_direct_buffer(audioBuffer, sizeInBytes,
-                readMode == READ_BLOCKING);
-         if(nullCounter<3){
+        int result=native_read_in_direct_buffer(audioBuffer, sizeInBytes, readMode == READ_BLOCKING);
+        if(nullCounter<3){
+            if(nullCounter==0){
+                lpsFilter=new onlineFilter(mSampleRate);
+                lpsFilter.reset();
+            }
             int pos=audioBuffer.position();
             byte[] audioData=new byte[pos];
+            byte content=(byte)00000000;
              for(int i=0;i<pos;i++)
-               audioData[i]=0;
+               audioData[i]=content;
            audioBuffer.clear();
            audioBuffer.put(audioData);
+           Log.d(TAG, "-----------ByteBuffer reading,return null successfully! -----------");
             nullCounter++;
             return result;
         }else {
         int pos=audioBuffer.position();
         audioBuffer.clear();
         byte[] audioData=new byte[pos];
-        audioBuffer.get(audioData,0,pos);
-        System.arraycopy(ap.filterProcess(audioData, sizeInBytes),0,audioData,0,ap.filterProcess(audioData, sizeInBytes).length);
+        audioBuffer.get(audioData,0,pos);        
         audioBuffer.clear();
-        audioBuffer.put(audioData);
+        audioBuffer.put(lpsFilter.process(audioData));
+        Log.d(TAG, "-----------ByteBuffer reading,to do procession or return original data! -----------");
         return result;
+            }
     }
-    }
-
 
     //--------------------------------------------------------------------------
     // Initialization / configuration
